@@ -34,6 +34,9 @@ The project also assesses how healthcare payments and income levels correlate wi
 
 The findings suggest significant correlations between healthcare payments and income levels with urbanization degrees. Policy recommendations are provided to tailor medical resource allocation based on urbanization levels.
 
+## License
+
+This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
 
 ## Acknowledgments
 
