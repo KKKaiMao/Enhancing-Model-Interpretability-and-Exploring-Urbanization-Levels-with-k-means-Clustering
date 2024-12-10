@@ -1,0 +1,296 @@
+---
+title: "Final_project_2 Urbanization Level Analysis: Correlations with Healthcare Payments and Income"
+author: "Kai Mao"
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    self-contained: true
+    embed-resources: true
+  pdf:
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    includes:
+      in-header: header.tex
+---
+
+
+# Data mining and cleaning 
+
+```{r, echo=TRUE}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(factoextra)
+```
+
+Data Import and Preprocessing
+
+```{r, echo=TRUE}
+# Import data
+medicare_data <- read.csv("./MUP_PHY_R24_P05_V10_D22_Prov_Svc.csv", stringsAsFactors = FALSE)
+tax_data <- read.csv("./21zpallagi.csv", header = TRUE, stringsAsFactors = FALSE)
+
+# Aggregate and preprocess Medicare data
+medicare_aggregated <- medicare_data %>%
+  filter(Rndrng_Prvdr_RUCA >= 1 & Rndrng_Prvdr_RUCA <= 10) %>%
+  mutate(Rndrng_Prvdr_RUCA = round(Rndrng_Prvdr_RUCA))%>%
+  group_by(Rndrng_Prvdr_Zip5, Rndrng_Prvdr_State_Abrvtn, Rndrng_Prvdr_RUCA) %>%
+  summarise(
+    Total_Services = sum(Tot_Srvcs, na.rm = TRUE),
+    Average_Payment = mean(Avg_Mdcr_Pymt_Amt, na.rm = TRUE),
+    Average_Standard_Payment = mean(Avg_Mdcr_Stdzd_Amt, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Aggregate tax data
+tax_aggregated <- tax_data %>%
+  group_by(zipcode) %>%
+  summarise(
+    Avg_AGI = mean(A00100, na.rm = TRUE),
+    Total_Income = sum(A02650, na.rm = TRUE),
+    Total_Tax_Credits = sum(A07100, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+mutate(zipcode = as.character(zipcode))
+
+# Filter out outliers
+iqr_filter <- function(data, column_name) {
+  Q1 <- quantile(data[[column_name]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(data[[column_name]], 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  threshold_upper <- Q3 + 1.5 * IQR
+  threshold_lower <- Q1 - 1.5 * IQR
+
+  data %>% filter(
+    .data[[column_name]] >= threshold_lower & .data[[column_name]] <= threshold_upper
+  )
+}
+
+medicare_aggregated <- medicare_aggregated %>%
+  iqr_filter("Total_Services") %>%
+  iqr_filter("Average_Payment") %>%
+  iqr_filter("Average_Standard_Payment")
+
+tax_aggregated <- tax_data %>%
+  group_by(zipcode) %>%
+  summarise(
+    Avg_AGI = mean(A00100, na.rm = TRUE),  # Assumed Adjusted Gross Income
+    Avg_Total_Income = mean(A02650 / N02650, na.rm = TRUE),  # Average Total Income
+    Avg_Salaries_Wages = mean(A00200 / N00200, na.rm = TRUE),  # Average Salaries and Wages
+    Avg_Taxable_Interest = mean(A00300 / N00300, na.rm = TRUE),  # Average Taxable Interest
+    Avg_Tax_Credits = mean(A07100 / N07100, na.rm = TRUE),  # Average Tax Credits
+    .groups = 'drop'
+  ) %>%
+  iqr_filter("Avg_AGI") %>%
+  iqr_filter("Avg_Total_Income") %>%
+  iqr_filter("Avg_Salaries_Wages") %>%
+  iqr_filter("Avg_Taxable_Interest") %>%
+  iqr_filter("Avg_Tax_Credits")%>%
+  mutate(zipcode = as.character(zipcode))
+
+# Merge datasets
+combined1_data <- inner_join(medicare_aggregated, tax_aggregated, by = c("Rndrng_Prvdr_Zip5" = "zipcode"))
+
+final_aggregated_data <- combined1_data %>%
+  group_by(Rndrng_Prvdr_State_Abrvtn, Rndrng_Prvdr_RUCA) %>%
+  summarise(
+    Total_Services = sum(Total_Services),
+    Average_Payment = mean(Average_Payment),
+    Average_Standard_Payment = mean(Average_Standard_Payment),
+    Avg_AGI = mean(Avg_AGI),
+    Avg_Total_Income = mean(Avg_Total_Income),
+    Avg_Salaries_Wages = mean(Avg_Salaries_Wages),
+    Avg_Taxable_Interest = mean(Avg_Taxable_Interest),
+    Avg_Tax_Credits = mean(Avg_Tax_Credits),
+    .groups = 'drop'
+  )
+
+```
+
+# RUCA Code Clustering Analysis
+
+## Analyze RUCA code distribution within Average Payment clusters
+
+```{r, echo=TRUE}
+library(ggplot2)
+# Perform clustering analysis on Average_Payment
+set.seed(134)  # Ensure reproducible clustering results
+kmeans_result <- kmeans(final_aggregated_data$Average_Payment, centers = 3, nstart = 25)
+
+
+final_aggregated_data$Average_Payment_Cluster <- as.factor(kmeans_result$cluster)
+
+# Analyze RUCA code distribution within clusters
+ruca_distribution <- final_aggregated_data %>%
+  group_by(Average_Payment_Cluster, Rndrng_Prvdr_RUCA) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(Total = sum(Count, na.rm = TRUE), Percentage = Count / Total * 100)
+
+# Visualize RUCA code distribution across clusters
+ggplot(ruca_distribution, aes(x = Average_Payment_Cluster, y = Percentage, fill = factor(Rndrng_Prvdr_RUCA))) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "RUCA Code Distribution within Average Payment Clusters",
+       x = "Average Payment Cluster",
+       y = "Percentage (%)",
+       fill = "RUCA Code") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+**Visualize the distribution of RUCA categories**
+
+```{r}
+
+# Set a random seed for reproducibility of k-means results
+set.seed(134)
+
+# Perform k-means clustering on Average Payment data
+kmeans_result <- kmeans(final_aggregated_data$Average_Payment, centers = 3, nstart = 25)
+
+# Add clustering results to the data frame
+final_aggregated_data$Average_Payment_Cluster <- as.factor(kmeans_result$cluster)
+
+# Categorize RUCA codes into three groups for detailed analysis
+final_aggregated_data$RUCA_Category <- case_when(
+  final_aggregated_data$Rndrng_Prvdr_RUCA == 1 ~ "1",
+  final_aggregated_data$Rndrng_Prvdr_RUCA %in% 2:7 ~ "2-7",
+  final_aggregated_data$Rndrng_Prvdr_RUCA %in% 8:10 ~ "8-10",
+  TRUE ~ "Other"  # Catch-all for any RUCA codes outside the specified ranges
+)
+
+# Calculate the percentage of each RUCA category within each payment cluster
+ruca_distribution <- final_aggregated_data %>%
+  group_by(Average_Payment_Cluster, RUCA_Category) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(Total = sum(Count, na.rm = TRUE), Percentage = Count / Total * 100)
+
+# Visualize the distribution of RUCA categories within clusters using ggplot2
+ggplot(ruca_distribution, aes(x = Average_Payment_Cluster, y = Percentage, fill = RUCA_Category)) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "RUCA Code Distribution within Average Payment Clusters",
+       x = "Average Payment Cluster",
+       y = "Percentage (%)",
+       fill = "RUCA Code Category") +
+  scale_fill_manual(values = c("1" = "#1f77b4", "2-7" = "#ff7f0e", "8-10" = "#2ca02c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+## Analyze RUCA code distribution within Average Adjusted Gross Income clusters
+
+```{r, echo=TRUE}
+# Reproduce the clustering and analysis for Average Adjusted Gross Income (AGI)
+library(ggplot2)
+set.seed(131)  # Ensure reproducibility of clustering results
+
+# Perform k-means clustering on Avg_AGI data
+kmeans_result1 <- kmeans(final_aggregated_data$Avg_AGI, centers = 3, nstart = 60)
+
+# Add clustering results to the dataset
+final_aggregated_data$Avg_AGI_Cluster <- as.factor(kmeans_result1$cluster)
+
+# Compute the percentage of each RUCA code within each AGI cluster
+ruca_distribution <- final_aggregated_data %>%
+  group_by(Avg_AGI_Cluster, Rndrng_Prvdr_RUCA) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(Total = sum(Count, na.rm = TRUE), Percentage = Count / Total * 100)
+
+# Visualize RUCA Code distribution across AGI clusters
+ggplot(ruca_distribution, aes(x = Avg_AGI_Cluster, y = Percentage, fill = factor(Rndrng_Prvdr_RUCA))) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "RUCA Code Distribution within Average Adjusted Gross Income clusters",
+       x = "Average Adjusted Gross Income Cluster",
+       y = "Percentage (%)",
+       fill = "RUCA Code") +
+  scale_fill_brewer(palette = "Set1") +  # Use a predefined color palette
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+```{r,echo=TRUE}
+# Set a seed for reproducibility of k-means results
+set.seed(131)
+
+# Perform k-means clustering on Avg_AGI data with three clusters
+kmeans_result1 <- kmeans(final_aggregated_data$Avg_AGI, centers = 3, nstart = 60)
+
+# Assign clustering results to the data frame
+final_aggregated_data$Avg_AGI_Cluster <- as.factor(kmeans_result1$cluster)
+
+# Define new RUCA categories based on RUCA codes for detailed analysis
+final_aggregated_data$RUCA_Category <- case_when(
+  final_aggregated_data$Rndrng_Prvdr_RUCA == 1 ~ "1",
+  final_aggregated_data$Rndrng_Prvdr_RUCA %in% 2:7 ~ "2-7",
+  final_aggregated_data$Rndrng_Prvdr_RUCA %in% 8:10 ~ "8-10",
+  TRUE ~ "Other"  # For any RUCA codes outside the specified ranges
+)
+
+# Calculate the percentage of each RUCA category within each AGI cluster
+ruca_distribution <- final_aggregated_data %>%
+  group_by(Avg_AGI_Cluster, RUCA_Category) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(Total = sum(Count, na.rm = TRUE), Percentage = Count / Total * 100)
+
+# Visualize the RUCA category distribution across AGI clusters using a bar plot
+ggplot(ruca_distribution, aes(x = Avg_AGI_Cluster, y = Percentage, fill = RUCA_Category)) +
+  geom_bar(stat = "identity", position = "fill") +  # Bar height represents percentage for comparability
+  labs(title = "RUCA Code Distribution within Average Adjusted Gross Income clusters",
+       x = "Average Adjusted Gross Income cluster",
+       y = "Percentage (%)",
+       fill = "RUCA Category") +
+  scale_fill_manual(values = c("1" = "#1f77b0", "2-7" = "#ff7f01", "8-10" = "#2ca020")) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Analyze RUCA code distribution within Average Standard Payment clusters
+
+```{r}
+# Set a seed for reproducibility
+set.seed(134)
+
+# Perform k-means clustering on Average_Standard_Payment data with three clusters
+kmeans_result3 <- kmeans(final_aggregated_data$Average_Standard_Payment, centers = 3, nstart = 25)
+
+# Add clustering results to the dataset
+final_aggregated_data$Average_Standard_Payment_Cluster <- as.factor(kmeans_result3$cluster)
+
+# Define new RUCA categories based on RUCA codes
+final_aggregated_data$RUCA_Category <- case_when(
+  final_aggregated_data$Rndrng_Prvdr_RUCA == 1 ~ "1",
+  final_aggregated_data$Rndrng_Prvdr_RUCA %in% 2:7 ~ "2-7",
+  final_aggregated_data$Rndrng_Prvdr_RUCA %in% 8:10 ~ "8-10",
+  TRUE ~ "Other"  # For RUCA codes outside specified ranges
+)
+
+# Calculate the percentage of each RUCA category within each payment cluster
+ruca_distribution <- final_aggregated_data %>%
+  group_by(Average_Standard_Payment_Cluster, RUCA_Category) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(Total = sum(Count, na.rm = TRUE), Percentage = Count / Total * 100)
+
+# Plot RUCA code distribution across payment clusters using ggplot2
+ggplot(ruca_distribution, aes(x = Average_Standard_Payment_Cluster, y = Percentage, fill = RUCA_Category)) +
+  geom_bar(stat = "identity", position = "fill") +  # Bar height represents percentage for comparability
+  labs(title = "RUCA Code Distribution within Average Standard Payment Clusters",
+       x = "Average Standard Payment Cluster",
+       y = "Percentage (%)",
+       fill = "RUCA Category") +
+  scale_fill_manual(values = c("1" = "#1f77b4", "2-7" = "#ff7f0e", "8-10" = "#2ca02c")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+

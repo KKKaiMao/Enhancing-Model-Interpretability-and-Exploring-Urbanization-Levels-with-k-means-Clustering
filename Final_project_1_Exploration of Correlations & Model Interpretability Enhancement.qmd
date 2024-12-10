@@ -1,0 +1,332 @@
+---
+title: "Final_project_1_Exploration of Correlations & Model Interpretability Enhancement"
+author: "Kai Mao"
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    self-contained: true
+    embed-resources: true
+  pdf:
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    includes:
+      in-header: header.tex
+---
+
+# Data mining and cleaning 
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(factoextra)
+
+# Load Medicare and tax data from CSV files
+medicare_data <- read.csv("./MUP_PHY_R24_P05_V10_D22_Prov_Svc.csv", stringsAsFactors = FALSE)
+tax_data <- read.csv("./21zpallagi.csv", header = TRUE, stringsAsFactors = FALSE)
+
+# Define a function to clean data by removing outliers based on the interquartile range (IQR)
+iqr_filter <- function(df, column) {
+  Q1 <- quantile(df[[column]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(df[[column]], 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+  df <- df %>% filter(df[[column]] >= lower_bound & df[[column]] <= upper_bound)
+  return(df)
+}
+
+# Aggregate and clean Medicare data
+medicare_aggregated <- medicare_data %>%
+  group_by(Rndrng_Prvdr_State_Abrvtn) %>%
+  summarise(
+    Total_Services = sum(Tot_Srvcs, na.rm = TRUE),
+    Average_Payment = mean(Avg_Mdcr_Pymt_Amt, na.rm = TRUE),
+    Average_Standard_Payment = mean(Avg_Mdcr_Stdzd_Amt, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(Rndrng_Prvdr_State_Abrvtn = as.character(Rndrng_Prvdr_State_Abrvtn)) %>%
+  iqr_filter("Average_Payment") %>%
+  iqr_filter("Average_Standard_Payment") %>%
+  iqr_filter("Total_Services")
+
+# Aggregate and clean tax data
+tax_aggregated <- tax_data %>%
+  group_by(STATE) %>%
+  summarise(
+    Avg_AGI = mean(A00100, na.rm = TRUE),  # Assumed Adjusted Gross Income
+    Avg_Total_Income = mean(A02650 / N02650, na.rm = TRUE),  # Average Total Income
+    Avg_Salaries_Wages = mean(A00200 / N00200, na.rm = TRUE),  # Average Salaries and Wages
+    Avg_Taxable_Interest = mean(A00300 / N00300, na.rm = TRUE),  # Average Taxable Interest
+    Avg_Tax_Credits = mean(A07100 / N07100, na.rm = TRUE),  # Average Tax Credits
+    .groups = 'drop'
+  ) %>%
+  iqr_filter("Avg_AGI") %>%
+  iqr_filter("Avg_Total_Income") %>%
+  iqr_filter("Avg_Salaries_Wages") %>%
+  iqr_filter("Avg_Taxable_Interest") %>%
+  iqr_filter("Avg_Tax_Credits")
+
+# Merge the cleaned and aggregated data by state abbreviation
+combined_data <- inner_join(medicare_aggregated, tax_aggregated, by = c("Rndrng_Prvdr_State_Abrvtn" = "STATE"))
+
+# Inspect the merged dataset
+print(combined_data)
+```
+
+
+# k-means Clustering Analysis
+
+## Exploration of Correlations:
+
+### From 2 to 10 to explore clustering effects
+
+```{r, echo=TRUE}
+# Load necessary libraries for data manipulation and clustering analysis
+library(dplyr)
+library(cluster)
+
+# Results list to store Chi-square test results for different k values
+results <- list()
+
+# Loop through different k values from 2 to 10 to explore clustering effects
+for (k in 2:10) {
+  # Apply K-means clustering to Average Payment data
+  kmeans_Payment <- kmeans(combined_data$Average_Payment, centers = k, nstart = 25)
+  # Apply K-means clustering to Avg AGI data
+  kmeans_AGI <- kmeans(combined_data$Avg_AGI, centers = k, nstart = 25)
+  
+  # Add clustering results as new columns to the dataframe
+  combined_data$Payment_Cluster <- kmeans_Payment$cluster
+  combined_data$AGI_Cluster <- kmeans_AGI$cluster
+  
+  # Create a cross-tabulation of clustering results
+  cross_tab <- table(combined_data$Payment_Cluster, combined_data$AGI_Cluster)
+  
+  # Perform Chi-square test to examine the independence of clustering results
+  chi_result <- chisq.test(cross_tab)
+  
+  # Store results in the list for each k value
+  results[[paste("k =", k)]] <- list(
+    Cross_Tab = cross_tab,
+    Chi_Result = chi_result
+  )
+  
+  # Print Chi-square test results for each k value to the console
+  cat("Results for k =", k, "\n")
+  print(chi_result)
+  cat("\n")
+}
+```
+
+
+### Generate visualizations of clusters
+```{r, echo=TRUE}
+# Scale cluster
+combined_data$Scaled_Average_Payment <- scale(combined_data$Average_Payment)
+set.seed(123)
+kmeans_payment <- kmeans(combined_data$Scaled_Average_Payment, centers = 3, nstart = 25)
+combined_data$Payment_Cluster <- as.factor(kmeans_payment$cluster)
+combined_data$Scaled_Avg_AGI <- scale(combined_data$Avg_AGI)
+set.seed(123)
+kmeans_agi <- kmeans(combined_data$Scaled_Avg_AGI, centers = 3, nstart = 25)
+combined_data$AGI_Cluster <- as.factor(kmeans_agi$cluster)
+
+# Ensure cluster labels are of factor type with correct ordering
+combined_data$Payment_Cluster <- factor(combined_data$Payment_Cluster, levels = c("1", "2", "3"))
+combined_data$AGI_Cluster <- factor(combined_data$AGI_Cluster, levels = c("1", "2", "3"))
+
+# Define color mapping functions for each cluster
+get_cluster_color1 <- function(cluster) {
+  colors <- c("1" = "red", "2" = "yellow", "3" = "blue")
+  return(colors[as.character(cluster)])
+}
+
+get_cluster_color2 <- function(cluster) {
+  colors <- c("2" = "red", "3" = "yellow", "1" = "blue")
+  return(colors[as.character(cluster)])
+}
+
+# Use ggplot2 for plotting, showcasing the clustering results of different states
+ggplot(combined_data) +
+  geom_point(aes(x = Rndrng_Prvdr_State_Abrvtn, y = Scaled_Average_Payment, 
+                 color = get_cluster_color1(Payment_Cluster), shape = "Average Payment"), 
+             size = 4, alpha = 0.7) +
+  geom_point(aes(x = Rndrng_Prvdr_State_Abrvtn, y = Scaled_Avg_AGI, 
+                 color = get_cluster_color2(AGI_Cluster), shape = "Avg AGI"), 
+             size = 4, alpha = 0.7) +
+  scale_color_identity() +
+  scale_shape_manual(values = c("Average Payment" = 16, "Avg AGI" = 17)) +
+  labs(title = "Comparative K-means Clustering Results by Average AGI & Average Payment",
+       x = "State",
+       y = "Scaled Values",
+       color = "Cluster",
+       shape = "Variable Type") +
+  theme_minimal() +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+```
+
+### Part for cross-tabulation and Chi-square test to validate cluster relationships
+
+```{r, echo=TRUE}
+
+cross_tab <- table(combined_data$Payment_Cluster, combined_data$AGI_Cluster)
+print(cross_tab)
+chi_result <- chisq.test(cross_tab)
+print(chi_result)
+```
+
+### Fisher's exact test can be used as a supplement to the Chi-square test, especially with small sample sizes
+```{r,echo=TRUE}
+fisher_result <- fisher.test(cross_tab)
+print(fisher_result)
+```
+
+### Linear regression analysis with Avg_AGI and Average_Payment 
+```{r, echo=TRUE}
+model <- lm(Average_Payment ~ Avg_AGI, data = combined_data)
+
+# Display the summary of the linear regression model to evaluate the relationship and to assess the significance of the independent variable Avg_AGI on Average_Payment
+model_summary <- summary(model)
+print(model_summary)
+```
+
+Hence, we can find that kmeans can be used to analyze the correlation!
+
+
+## Model Interpretability Enhancement:
+```{r,echo=TRUE}
+# Construct a model to explore relationships
+model <- lm(Average_Standard_Payment ~ Avg_Salaries_Wages, data = combined_data)
+
+# Display the summary of the linear regression model
+model_summary <- summary(model)
+print(model_summary)
+
+# Plot the relationship between Avg Salaries_Wages and Average_Standard_Payment
+plot_data <- ggplot(combined_data, aes(x = Avg_AGI, y = Average_Payment)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", formula = y ~ x, color = "blue", se = FALSE) +
+  labs(x = "Avg Salaries_Wages (Thousands of Dollars)", y = "Average_Standard_Payment (Dollars)", title = "Regression Analysis: Salaries Wages vs. Medical Payments")
+
+print(plot_data)
+
+# Compare polynomial models of different degrees using AIC and BIC as criteria
+aic_values <- sapply(1:5, function(degree) {
+  model <- lm(Average_Standard_Payment ~ poly(Avg_Salaries_Wages, degree, raw=TRUE), data = combined_data)
+  AIC(model)
+})
+
+bic_values <- sapply(1:5, function(degree) {
+  model <- lm(Average_Standard_Payment ~ poly(Avg_Salaries_Wages, degree, raw=TRUE), data = combined_data)
+  BIC(model)
+})
+
+# Output AIC and BIC values to identify the optimal polynomial degree
+degrees <- 1:5
+aic_bic_data <- data.frame(Degree = degrees, AIC = aic_values, BIC = bic_values)
+print(aic_bic_data)
+```
+
+Cluster the data based on Average_Standard_Payment into three clusters and developed what we term the Clustered Segment Model.
+
+
+```{r,echo=TRUE}
+# Normalize the Average Payment data to prepare for clustering
+combined_data$Scaled_Average_Standard_Payment <- scale(combined_data$Average_Standard_Payment)
+
+# Apply K-means clustering to the Scaled Average Standard Payment with a set number of clusters
+kmeans_standard_payment <- kmeans(combined_data$Scaled_Average_Standard_Payment, centers = 3, nstart = 30)
+
+# Add cluster labels as a new factor variable to the data frame
+combined_data$Standard_Payment_Cluster <- as.factor(kmeans_standard_payment$cluster)
+
+# Build a linear regression model incorporating clusters to analyze the enhanced interpretability
+segmented_model <- lm(Average_Standard_Payment ~ Avg_Salaries_Wages + Standard_Payment_Cluster, data = combined_data)
+
+# Print the summary of the clustered model to evaluate improvements
+segmented_model_summary <- summary(segmented_model)
+print(segmented_model_summary)
+```
+
+```{r}
+# Normalize the Average Standard Payment again for the baseline model
+combined_data$Scaled_Average_Standard_Payment <- scale(combined_data$Average_Standard_Payment)
+original_model <- lm(Average_Standard_Payment ~ Avg_Salaries_Wages, data = combined_data)
+original_model_summary <- summary(original_model)
+
+# Print summary for baseline model
+print("Original Model Summary:")
+print(original_model_summary)
+
+# Randomly assign states to three clusters to compare against strategic clustering
+set.seed(113)  # Ensures reproducibility
+combined_data$Random_Cluster <- as.factor(sample(1:3, nrow(combined_data), replace=TRUE))
+
+# Build a linear model with random clusters to serve as a control
+random_segmented_model <- lm(Average_Standard_Payment ~ Avg_Salaries_Wages + Random_Cluster, data = combined_data)
+
+# Print the summary of the randomly segmented model
+random_segmented_model_summary <- summary(random_segmented_model)
+print("Random Segment Model Summary:")
+print(random_segmented_model_summary)
+
+# Print summary for clustered segment model for comparison
+print("Clustered Segment Model Summary:")
+print(segmented_model_summary)
+```
+
+Create a data frame to store evaluation metrics for each model
+
+```{r}
+# Create a data frame to store evaluation metrics for each model
+evaluation_table <- data.frame(
+  Model = character(),
+  R_squared = numeric(),
+  Adjusted_R_squared = numeric(),
+  Residual_SE = numeric(),
+  AIC = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Populate evaluation metrics for the original model
+evaluation_table <- rbind(evaluation_table, data.frame(
+  Model = "Original Model",
+  R_squared = original_model_summary$r.squared,
+  Adjusted_R_squared = original_model_summary$adj.r.squared,
+  Residual_SE = original_model_summary$sigma,
+  AIC = AIC(original_model)
+))
+
+# Populate evaluation metrics for the random segment model
+evaluation_table <- rbind(evaluation_table, data.frame(
+  Model = "Random Segment Model",
+  R_squared = random_segmented_model_summary$r.squared,
+  Adjusted_R_squared = random_segmented_model_summary$adj.r.squared,
+  Residual_SE = random_segmented_model_summary$sigma,
+  AIC = AIC(random_segmented_model)
+))
+
+# Populate evaluation metrics for the clustered segment model
+evaluation_table <- rbind(evaluation_table, data.frame(
+  Model = "Clustered Segment Model",
+  R_squared = segmented_model_summary$r.squared,
+  Adjusted_R_squared = segmented_model_summary$adj.r.squared,
+  Residual_SE = segmented_model_summary$sigma,
+  AIC = AIC(segmented_model)
+))
+
+# Print the evaluation table to compare the models
+print(evaluation_table)
+```
+
+Hence, we can find that kmeans can enhance the explanatory power of the model!
+
+
+
