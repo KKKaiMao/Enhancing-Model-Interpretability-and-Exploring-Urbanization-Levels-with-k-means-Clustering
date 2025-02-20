@@ -1,4 +1,4 @@
-# Stats 506 Final Project: Enhancing Model Interpretability and Exploring Urbanization Levels with k-means Clustering
+# Enhancing Model Interpretability and Exploring Urbanization Levels with k-means Clustering
 
 This repository contains the data analysis and visualization codes for my Stats 506 final project at the University of Michigan. The project investigates the correlations between healthcare payments and income levels with urbanization, utilizing k-means clustering for enhanced interpretability and deeper insights.
 
